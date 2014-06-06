@@ -28,6 +28,8 @@ let averageChart (prices:seq<#seq<float>>) =
 let pathsChart (prices:seq<#seq<float>>) = prices |> Seq.take (System.Math.Min(Seq.length prices, 100)) |> Seq.map (Chart.FastLine) |> Chart.Combine
 let charts (prices:seq<#seq<float>>) =  Chart.Rows [prices |> areaChart;  prices |> averageChart]  
 
+let noStop p v t payoff = false
+
 module TestPrices =
     lazy
     let prices = allPaths 1000 365 365 100. (Brownian(0., 0.2, 0., 0.06))
@@ -38,6 +40,14 @@ module TestPrices =
     prices |> pathsChart
     ()
 
+module TestBSValue =
+    let d, r, y, v, sims, daysInYear = 365, 0.0, 0.0, 0.3, 10000, 365
+    let t = float d / float daysInYear
+    let test style s x =
+        let strat = [ 1., Option(d, style, x, black_scholesG style s x t r (r - y) v) ] , d
+        let pricePaths = allPaths sims d daysInYear s (Brownian(0., v, y, r))
+        let payoffs = pricePaths |> truncatedPayoffsPaths noStop  strat s r v y (float daysInYear) BlackScholes
+        let lastPayoffs = payoffs |> Seq.map (Seq.last) |> Seq.map (discount r t)
+        lastPayoffs |> Seq.average, lastPayoffs |> stdErr, payoffs
 
-    
-
+    test Call 100. 100.

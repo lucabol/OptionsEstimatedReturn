@@ -106,3 +106,75 @@ let discount annualRate timeInYears value = value * exp(-annualRate * timeInYear
 /// Standard error of a sequence
 let stdErr values = stdDev values / sqrt (float (Seq.length values)) 
 
+let roundzero x = if x = 0. then 0.0000001 else x
+let roundone  x = if x = 1. then 1.0000001 else x
+let nonZero x = if x = 0. then invalidArg "value" "arg can't be zero" 
+
+/// style: either Call or Put
+/// s: stock price
+/// x: strike price of option
+/// t: time to expiration in years
+/// r: risk free interest rate
+/// v: volatility
+/// b: cost of carry
+///   b = r for B & S (1973) European no dividend
+///   b = r - y Merton (1973) European stock option with continuous dividend
+///   b = 0     Black (1976) Future option model
+///   b = 0 r = 0 Asay (1982) margined future option model
+///   b = r - rf Garman & Kohlhagen (1983) currency option model
+let black_scholesG style s x t r b v =
+    let t = roundzero t /// at time 0 it is the payoff for the option
+    nonZero v; nonZero s; nonZero x;
+
+    let d1 = (log (s / x) + (b + v ** 2. / 2.) * t) / (v * sqrt(t))
+    let d2 = d1 - v * sqrt(t)
+    match style with
+    | Call -> s * exp((b - r) * t) * cnd(d1) - x * exp(-r * t) * cnd(d2)
+    | Put  -> x * exp(-r * t) * cnd(-d2) - s * exp((b - r) * t) * cnd(-d1)
+
+/// Calculate the value of a contract
+let optionValue style s x t r v y initalDays initialPremium = function
+| BlackScholes -> black_scholesG style s x t r (r - y) v
+
+/// Value 
+let contractValue s t r v y formula = function
+| Option(d, style, x, prem)  -> optionValue  style s x t r v y d prem formula
+| Stock(initialPrice) -> s
+| Commission -> 1.
+
+let contractCost s t r v y formula = function
+| Option(d, style, x, prem)  -> prem
+| Stock(initialPrice) -> initialPrice
+| Commission -> 1.
+
+let strategyValue valueF s t r v y formula strategy =
+    fst strategy |> Seq.map (fun (q, o) -> valueF s t r v y formula o * q)
+
+/// Calculates all payoffs for all price paths cutting short the ones stopped out (keeping the payoff at stop time for remaining days)
+let truncatedPayoffsPaths shouldStop strategy  price rF volF y daysInYear optionFormula pricesPaths =
+    let totalDays = snd strategy
+    let originalCost = strategy
+                       |> strategyValue contractCost price totalDays rF volF y optionFormula
+                       |> Seq.sum
+
+    let foldF (isStopped, stopPayoff:float, i, payoffs) p =
+        if isStopped
+            then isStopped, stopPayoff, i + 1, stopPayoff::payoffs
+            else
+                let daysRemaining = totalDays - i
+                let t = float daysRemaining / daysInYear
+                let v = volF // make volF a function in future
+                let r = rF 
+                let payoff = strategy
+                             |> strategyValue contractValue p t r v y optionFormula
+                             |> Seq.sum 
+                             |> (-) originalCost
+                if shouldStop p v t payoff
+                    then true, payoff, i + 1, payoff::payoffs
+                    else false, 0., i + 1, payoff::payoffs
+
+    pricesPaths |> Seq.map (Seq.fold foldF (false, 0., 0, []))
+                |> Seq.map (fun (_, _, _, payoffs) -> payoffs)
+                |> Seq.map (Seq.toList >> List.rev)
+
+
